@@ -1,0 +1,3 @@
+[submodule "drone_thrust_analyzer"]
+	path = drone_thrust_analyzer
+	url = https://github.com/wachinaba/drone_thrust_analyzer.git
