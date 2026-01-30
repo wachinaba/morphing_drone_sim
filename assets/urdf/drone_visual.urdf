@@ -1,0 +1,93 @@
+<?xml version="1.0"?>
+<!--
+見た目だけドローンっぽくするための簡易URDF（単一リンク）。
+- 物理（collision/inertial）は最小のボックスのみ
+- arms/rotors は visual のみ
+-->
+<robot name="drone_visual">
+  <link name="base_link">
+    <!-- Physics (keep simple) -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.1"/>
+      <!--
+      慣性（近似）:
+      - body: 0.04kg の薄い箱（0.07x0.07x0.02）
+      - rotors: 0.015kg x4 を (±0.13, ±0.13, 0) に点質量として配置
+      これにより yaw(zz) が大きくなり、ドローンっぽい回りにくさが出る。
+      計算結果:
+        Ixx=Iyy=0.0010316666666666668
+        Izz=0.002060666666666667
+      -->
+      <inertia ixx="0.0010316666667" ixy="0" ixz="0"
+               iyy="0.0010316666667" iyz="0"
+               izz="0.0020606666667"/>
+    </inertial>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 0.05 0.05"/>
+      </geometry>
+    </collision>
+
+    <!-- Visuals -->
+    <!-- body -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.07 0.07 0.02"/>
+      </geometry>
+      <material name="body_gray">
+        <color rgba="0.6 0.6 0.65 1.0"/>
+      </material>
+    </visual>
+
+    <!-- arms (diagonal X/Y) -->
+    <!-- arm length and placement are only for appearance -->
+    <visual>
+      <origin xyz="0.065 0.065 0" rpy="0 0 0.78539816339"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+      <material name="arm_dark"><color rgba="0.2 0.2 0.2 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="-0.065 0.065 0" rpy="0 0 2.35619449019"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+      <material name="arm_dark"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.065 -0.065 0" rpy="0 0 -2.35619449019"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+      <material name="arm_dark"/>
+    </visual>
+    <visual>
+      <origin xyz="0.065 -0.065 0" rpy="0 0 -0.78539816339"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+      <material name="arm_dark"/>
+    </visual>
+
+    <!-- rotors (visual discs) -->
+    <visual>
+      <origin xyz="0.13 0.13 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.05" length="0.004"/></geometry>
+      <material name="rotor_black"><color rgba="0.05 0.05 0.05 0.9"/></material>
+    </visual>
+    <visual>
+      <origin xyz="-0.13 0.13 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.05" length="0.004"/></geometry>
+      <material name="rotor_black"/>
+    </visual>
+    <visual>
+      <origin xyz="-0.13 -0.13 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.05" length="0.004"/></geometry>
+      <material name="rotor_black"/>
+    </visual>
+    <visual>
+      <origin xyz="0.13 -0.13 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.05" length="0.004"/></geometry>
+      <material name="rotor_black"/>
+    </visual>
+  </link>
+</robot>
+
+

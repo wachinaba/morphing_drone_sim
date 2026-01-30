@@ -1,0 +1,314 @@
+<?xml version="1.0"?>
+<!--
+Morphing drone URDF (MVP):
+- 物理は簡易（baseのcollision/inertialのみ）
+- 4本アーム + 4ロータリンク（推力適用点）
+- 各アーム: fixed(yaw0) -> fold(z) -> slant(y) -> arm_link (visual) -> tilt(x) -> rotor_link
+
+角度入力の符号規約:
+- visualize_morph_drone.py に合わせるため、シミュレータ側で
+    fold  = -phi
+    slant = -psi
+    tilt  = +theta
+  を関節角として与える想定。
+
+注意:
+- slant軸はURDFでは固定軸だが、各アームのローカル座標系を yaw0 で整えることで
+  "arm方向に応じた slant" と等価になるように構成している。
+-->
+<robot name="morphing_drone">
+  <!-- Base -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.0010316666667" ixy="0" ixz="0"
+               iyy="0.0010316666667" iyz="0"
+               izz="0.0020606666667"/>
+    </inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.05 0.05 0.05"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.07 0.07 0.02"/></geometry>
+      <material name="body_gray"><color rgba="0.6 0.6 0.65 1.0"/></material>
+    </visual>
+  </link>
+
+  <!-- Parameters (documented): cx=cy=0.035, arm_length=0.18, rotor_radius=0.10 (visual) -->
+
+  <!-- Macro-ish pattern is duplicated 4 times (no xacro dependency). -->
+
+  <!-- ARM 0: +x,+y quadrant -->
+  <link name="arm0_yaw">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm0_yaw_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="arm0_yaw"/>
+    <origin xyz="0.035 0.035 0.0" rpy="0 0 0.78539816339"/> <!-- yaw0 = +45deg -->
+  </joint>
+
+  <link name="arm0_fold">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm0_fold_joint" type="revolute">
+    <parent link="arm0_yaw"/>
+    <child link="arm0_fold"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="20"/>
+  </joint>
+
+  <link name="arm0_slant">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm0_slant_joint" type="revolute">
+    <parent link="arm0_fold"/>
+    <child link="arm0_slant"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.570796" upper="1.570796" effort="10" velocity="20"/>
+  </joint>
+
+  <link name="arm0_link">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+    <collision>
+      <origin xyz="0.09 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0.09 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+      <material name="arm_dark"><color rgba="0.2 0.2 0.2 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="arm0_arm_joint" type="fixed">
+    <parent link="arm0_slant"/>
+    <child link="arm0_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="rotor0_link">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.10" length="0.004"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.10" length="0.004"/></geometry>
+      <material name="rotor_black"><color rgba="0.0 0.0 0.0 0.5"/></material>
+    </visual>
+  </link>
+  <joint name="arm0_tilt_joint" type="revolute">
+    <parent link="arm0_slant"/>
+    <child link="rotor0_link"/>
+    <origin xyz="0.18 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="20"/>
+  </joint>
+
+  <!-- ARM 1: -x,+y quadrant -->
+  <link name="arm1_yaw">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm1_yaw_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="arm1_yaw"/>
+    <origin xyz="-0.035 0.035 0.0" rpy="0 0 2.35619449019"/> <!-- yaw0 = +135deg -->
+  </joint>
+  <link name="arm1_fold">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm1_fold_joint" type="revolute">
+    <parent link="arm1_yaw"/>
+    <child link="arm1_fold"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="20"/>
+  </joint>
+  <link name="arm1_slant">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm1_slant_joint" type="revolute">
+    <parent link="arm1_fold"/>
+    <child link="arm1_slant"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.570796" upper="1.570796" effort="10" velocity="20"/>
+  </joint>
+  <link name="arm1_link">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+    <collision>
+      <origin xyz="0.09 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0.09 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+      <material name="arm_dark"/>
+    </visual>
+  </link>
+  <joint name="arm1_arm_joint" type="fixed">
+    <parent link="arm1_slant"/>
+    <child link="arm1_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="rotor1_link">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.10" length="0.004"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.10" length="0.004"/></geometry>
+      <material name="rotor_black"/>
+    </visual>
+  </link>
+  <joint name="arm1_tilt_joint" type="revolute">
+    <parent link="arm1_slant"/>
+    <child link="rotor1_link"/>
+    <origin xyz="0.18 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="20"/>
+  </joint>
+
+  <!-- ARM 2: -x,-y quadrant -->
+  <link name="arm2_yaw">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm2_yaw_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="arm2_yaw"/>
+    <origin xyz="-0.035 -0.035 0.0" rpy="0 0 -2.35619449019"/> <!-- yaw0 = -135deg -->
+  </joint>
+  <link name="arm2_fold">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm2_fold_joint" type="revolute">
+    <parent link="arm2_yaw"/>
+    <child link="arm2_fold"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="20"/>
+  </joint>
+  <link name="arm2_slant">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm2_slant_joint" type="revolute">
+    <parent link="arm2_fold"/>
+    <child link="arm2_slant"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.570796" upper="1.570796" effort="10" velocity="20"/>
+  </joint>
+  <link name="arm2_link">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+    <collision>
+      <origin xyz="0.09 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0.09 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+      <material name="arm_dark"/>
+    </visual>
+  </link>
+  <joint name="arm2_arm_joint" type="fixed">
+    <parent link="arm2_slant"/>
+    <child link="arm2_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="rotor2_link">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.10" length="0.004"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.10" length="0.004"/></geometry>
+      <material name="rotor_black"/>
+    </visual>
+  </link>
+  <joint name="arm2_tilt_joint" type="revolute">
+    <parent link="arm2_slant"/>
+    <child link="rotor2_link"/>
+    <origin xyz="0.18 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="20"/>
+  </joint>
+
+  <!-- ARM 3: +x,-y quadrant -->
+  <link name="arm3_yaw">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm3_yaw_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="arm3_yaw"/>
+    <origin xyz="0.035 -0.035 0.0" rpy="0 0 -0.78539816339"/> <!-- yaw0 = -45deg -->
+  </joint>
+  <link name="arm3_fold">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm3_fold_joint" type="revolute">
+    <parent link="arm3_yaw"/>
+    <child link="arm3_fold"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="20"/>
+  </joint>
+  <link name="arm3_slant">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+  </link>
+  <joint name="arm3_slant_joint" type="revolute">
+    <parent link="arm3_fold"/>
+    <child link="arm3_slant"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.570796" upper="1.570796" effort="10" velocity="20"/>
+  </joint>
+  <link name="arm3_link">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+    <collision>
+      <origin xyz="0.09 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0.09 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.18 0.01 0.01"/></geometry>
+      <material name="arm_dark"/>
+    </visual>
+  </link>
+  <joint name="arm3_arm_joint" type="fixed">
+    <parent link="arm3_slant"/>
+    <child link="arm3_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="rotor3_link">
+    <inertial><origin xyz="0 0 0"/><mass value="0.0001"/><inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/></inertial>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.10" length="0.004"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.10" length="0.004"/></geometry>
+      <material name="rotor_black"/>
+    </visual>
+  </link>
+  <joint name="arm3_tilt_joint" type="revolute">
+    <parent link="arm3_slant"/>
+    <child link="rotor3_link"/>
+    <origin xyz="0.18 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="20"/>
+  </joint>
+
+</robot>
+
+
