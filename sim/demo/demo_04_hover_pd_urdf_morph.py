@@ -55,20 +55,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="URDF morph demo: hover PD + pinv mixer using URDF rotor links.")
     parser.add_argument("--gui", action="store_true", help="Use PyBullet GUI.")
     parser.add_argument("--seconds", type=float, default=12.0)
-    parser.add_argument("--hz", type=float, default=240.0)
+    parser.add_argument("--hz", type=float, default=240.0, help="Control loop rate [Hz]. Default 240.")
     parser.add_argument(
         "--physics-hz",
         type=float,
-        default=240.0,
-        help="PyBullet physics stepping rate [Hz]. Control runs at --hz. Use physics-hz>=hz and preferably an integer multiple. Default: 240",
+        default=960.0,
+        help="PyBullet physics stepping rate [Hz]. Control runs at --hz. Default 960 (4 substeps per control step).",
     )
     parser.add_argument("--gravity", type=float, default=9.81)
-    parser.add_argument("--lin-damping", type=float, default=0.05, help="PyBullet linear damping applied to all links. Default: 0.05")
-    parser.add_argument("--ang-damping", type=float, default=0.05, help="PyBullet angular damping applied to all links. Default: 0.05")
+    parser.add_argument("--lin-damping", type=float, default=0.08, help="PyBullet linear damping applied to all links. Default: 0.08 (tuned for 1.8 kg)")
+    parser.add_argument("--ang-damping", type=float, default=0.08, help="PyBullet angular damping applied to all links. Default: 0.08 (tuned for 1.8 kg)")
 
     # URDF
     parser.add_argument("--urdf", type=str, default="assets/urdf/morphing_drone.urdf")
-    parser.add_argument("--body-z", type=float, default=0.30)
+    parser.add_argument("--body-z", type=float, default=0.35, help="Initial base height [m]. Default 0.35 for 1.8 kg.")
     parser.add_argument("--z-des", type=float, default=None)
 
     # Morph angles (base + optional sin)
@@ -93,8 +93,8 @@ def main() -> int:
     parser.add_argument(
         "--tw-ratio",
         type=float,
-        default=3.0,
-        help="Design thrust-to-weight ratio (total max thrust / weight). Typical: 2..4. Default: 3.0",
+        default=5.5,
+        help="Design thrust-to-weight ratio (total max thrust / weight). 5–6 gives ~2 kgf/rotor at 1.8 kg. Default: 5.5",
     )
     parser.add_argument(
         "--max-thrust-per-rotor",
@@ -104,19 +104,19 @@ def main() -> int:
     )
 
     # Motor
-    parser.add_argument("--motor-tau", type=float, default=0.05)
+    parser.add_argument("--motor-tau", type=float, default=0.04, help="Motor first-order time constant [s]. Default 0.04 for 1.8 kg.")
     parser.add_argument("--omega2-rate", type=float, default=None)
 
-    # Control
-    parser.add_argument("--kp-att", type=float, default=0.15)
-    parser.add_argument("--kd-att", type=float, default=0.02)
+    # Control (defaults tuned for 1.8 kg morphing_drone: inertia ~0.014, mass 1.8)
+    parser.add_argument("--kp-att", type=float, default=1.4, help="Attitude P gain. Default 1.4 for 1.8 kg.")
+    parser.add_argument("--kd-att", type=float, default=0.22, help="Attitude D gain. Default 0.22 for 1.8 kg.")
     parser.add_argument("--kp-att-xyz", type=float, nargs=3, default=None, metavar=("KPX", "KPY", "KPZ"), help="Axis-wise attitude P gains (roll,pitch,yaw). Overrides --kp-att.")
     parser.add_argument("--kd-att-xyz", type=float, nargs=3, default=None, metavar=("KDX", "KDY", "KDZ"), help="Axis-wise attitude D gains (roll,pitch,yaw). Overrides --kd-att.")
     parser.add_argument("--ki-att", type=float, default=0.0, help="Attitude integral gain (SO(3) error). Default: 0")
     parser.add_argument("--att-int-limit", type=float, default=1.0, help="Attitude integrator clamp (per-axis). Default: 1.0")
     parser.add_argument("--att-int-leak", type=float, default=0.0, help="Attitude integrator leak [1/s]. Default: 0")
-    parser.add_argument("--kp-z", type=float, default=6.0)
-    parser.add_argument("--kd-z", type=float, default=3.5)
+    parser.add_argument("--kp-z", type=float, default=10.0, help="Altitude P gain. Default 10 for 1.8 kg.")
+    parser.add_argument("--kd-z", type=float, default=6.5, help="Altitude D gain. Default 6.5 for 1.8 kg.")
     parser.add_argument("--yaw-des", type=float, default=0.0)
     parser.add_argument("--yaw-amp", type=float, default=0.0, help="Yaw sine amplitude [deg]. Default: 0")
     parser.add_argument("--yaw-freq", type=float, default=0.0, help="Yaw sine frequency [Hz]. Default: 0")
@@ -292,7 +292,9 @@ def main() -> int:
             n0z_sum = max(1e-6, n0z_sum)
             weight = float(mass) * float(args.gravity)
             omega2_hover = weight / (max(1e-12, float(args.CT)) * n0z_sum)
-            motor.reset(np.full((4,), float(omega2_hover), dtype=float))
+            # Margin above hover to reduce initial drop (motor lag / transients)
+            omega2_init = min(float(omega2_hover) * 1.12, float(omega2_max_eff) * 0.88)
+            motor.reset(np.full((4,), float(omega2_init), dtype=float))
         except Exception:
             # Fallback: safe default
             motor.reset(np.zeros((4,), dtype=float))
@@ -537,6 +539,11 @@ def main() -> int:
                 Fz_min=0.0,
                 Fz_max=None,
             )
+            # Clamp Fz to what mixer can deliver (leave headroom for torque to avoid desat).
+            # Allow at least 1.05*weight so we can always command hover when level.
+            weight = float(mass) * float(args.gravity)
+            Fz_max_achievable = max(weight * 1.05, float(args.CT) * max(1e-6, float(nz_sum)) * float(omega2_max_eff) * 0.92)
+            Fz_b = min(float(Fz_b), Fz_max_achievable)
             tau_w = R_bw @ np.asarray(tau_b, dtype=float).reshape(3)
             u = np.array([float(Fz_b), float(tau_w[0]), float(tau_w[1]), float(tau_w[2])], dtype=float)
 

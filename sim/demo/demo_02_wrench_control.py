@@ -38,7 +38,7 @@ def main() -> int:
     parser.add_argument("--theta", type=float, default=0.0)
     parser.add_argument("--cx", type=float, default=0.035)
     parser.add_argument("--cy", type=float, default=0.035)
-    parser.add_argument("--arm-length", type=float, default=0.18)
+    parser.add_argument("--arm-length", type=float, default=0.12)
     parser.add_argument("--symmetry", type=str, default="mirror_xy", choices=["mirror_xy", "none"])
 
     # Body

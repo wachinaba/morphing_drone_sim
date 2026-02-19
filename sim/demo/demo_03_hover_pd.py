@@ -73,7 +73,7 @@ def main() -> int:
     parser.add_argument("--theta-freq", type=float, default=0.0, help="Theta sine frequency [Hz]. Default: 0")
     parser.add_argument("--cx", type=float, default=0.035)
     parser.add_argument("--cy", type=float, default=0.035)
-    parser.add_argument("--arm-length", type=float, default=0.18)
+    parser.add_argument("--arm-length", type=float, default=0.12, help="Arm length [m]. Default: 0.12 (matches morphing_drone.urdf)")
     parser.add_argument("--symmetry", type=str, default="mirror_xy", choices=["mirror_xy", "none"])
 
     # Mixer params (MVP)

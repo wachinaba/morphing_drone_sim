@@ -44,7 +44,7 @@ def main() -> int:
     parser.add_argument("--theta", type=float, default=0.0, help="Tilt angle theta [deg].")
     parser.add_argument("--cx", type=float, default=0.035, help="Hinge x offset [m].")
     parser.add_argument("--cy", type=float, default=0.035, help="Hinge y offset [m].")
-    parser.add_argument("--arm-length", type=float, default=0.18, help="Arm length [m].")
+    parser.add_argument("--arm-length", type=float, default=0.12, help="Arm length [m]. Default: 0.12 (matches morphing_drone.urdf)")
     parser.add_argument(
         "--symmetry",
         type=str,
