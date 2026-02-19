@@ -40,7 +40,7 @@ class TestUrdfMorphGeometry(unittest.TestCase):
                 theta_deg=float(theta),
                 cx=0.035,
                 cy=0.035,
-                arm_length_m=0.18,
+                arm_length_m=0.12,
                 symmetry=str(symmetry),
             )
             r_geo = np.stack([p.rotor_center for p in poses], axis=0)
