@@ -31,12 +31,41 @@ class PyBulletEnv:
         gravity: float = 9.81,
         gui_width: int | None = None,
         gui_height: int | None = None,
+        record_mp4: str | None = None,
+        record_fps: int | None = None,
     ):
         import pybullet as p
         import pybullet_data
 
         self._p = p
-        if bool(gui) and (gui_width is not None or gui_height is not None):
+        self._gui = bool(gui)
+        self._rendering_enabled = True
+
+        # NOTE: PyBullet's MP4 recording is implemented in the GUI server and is configured
+        # via command-line style options passed to connect(..., options=...).
+        # Using this path yields stable 1x playback (video duration matches simulated wall-clock
+        # duration when running with GUI sleep), compared to STATE_LOGGING_VIDEO_MP4 which can
+        # have backend-dependent timing.
+        if bool(self._gui):
+            opts: list[str] = []
+            if record_mp4:
+                # Use a simple --key=value form (works with Bullet command line parsing).
+                # Avoid spaces in path; quoting behavior can vary across platforms.
+                opts.append(f"--mp4={str(record_mp4)}")
+                if record_fps is not None:
+                    fps = int(record_fps)
+                    if fps > 0:
+                        opts.append(f"--mp4fps={fps}")
+            if gui_width is not None or gui_height is not None:
+                w = None if gui_width is None else int(gui_width)
+                h = None if gui_height is None else int(gui_height)
+                if w is not None and w > 0:
+                    opts.append(f"--width={w}")
+                if h is not None and h > 0:
+                    opts.append(f"--height={h}")
+            options = " ".join(opts) if opts else None
+            self._cid = self._p.connect(self._p.GUI, options=options)
+        elif (gui_width is not None or gui_height is not None):
             w = None if gui_width is None else int(gui_width)
             h = None if gui_height is None else int(gui_height)
             opts = []
@@ -54,6 +83,19 @@ class PyBulletEnv:
         self._p.setAdditionalSearchPath(pybullet_data.getDataPath())
         self._p.setGravity(0.0, 0.0, -float(gravity))
         self._p.setTimeStep(float(time_step))
+        try:
+            # Ensure the simulation only advances when the client calls stepSimulation().
+            # (In GUI mode, this also helps keep video recording deterministic.)
+            self._p.setRealTimeSimulation(0)
+        except Exception:
+            pass
+        # When recording, we want deterministic frame capture based on simulation time.
+        # Enable "single step rendering" so the GUI renders only when stepSimulation() is called.
+        if bool(self._gui) and bool(record_mp4):
+            try:
+                self._p.configureDebugVisualizer(self._p.COV_ENABLE_SINGLE_STEP_RENDERING, 1)
+            except Exception:
+                pass
 
         self._body_id: int | None = None
         self._plane_id: int | None = None
@@ -124,6 +166,24 @@ class PyBulletEnv:
             self._p.stopStateLogging(int(log_id))
         except Exception:
             pass
+
+    def set_rendering_enabled(self, enabled: bool):
+        """
+        Enable/disable GUI rendering.
+        Useful for deterministic MP4 recording: only enable rendering on steps that should become video frames.
+        No-op in DIRECT mode.
+        """
+        en = bool(enabled)
+        if not bool(getattr(self, "_gui", False)):
+            return
+        if hasattr(self, "_rendering_enabled") and bool(self._rendering_enabled) == en:
+            return
+        try:
+            self._p.configureDebugVisualizer(self._p.COV_ENABLE_RENDERING, 1 if en else 0)
+            self._rendering_enabled = en
+        except Exception:
+            # Best-effort: don't fail sim if visualizer options aren't supported.
+            self._rendering_enabled = en
 
     def _joint_name_to_index(self) -> dict[str, int]:
         n = int(self._p.getNumJoints(self.body_id))
