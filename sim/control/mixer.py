@@ -192,7 +192,7 @@ def _solve_bounded_wls_active_set(
     return x, saturated
 
 
-def _allocate_fz_greedy(
+def _allocate_fz_balanced(
     *,
     A0: np.ndarray,
     Fz_target: float,
@@ -200,7 +200,12 @@ def _allocate_fz_greedy(
     omega2_max: float | None,
 ) -> np.ndarray:
     """
-    Fz（u[0]）を最優先で満たすための簡易配分（貪欲）。
+    Fz（u[0]）を最優先で満たすための初期配分。
+
+    以前の「貪欲に1発で埋める」方式は、A0 が同一/近い場合に
+    1ロータだけに推力を載せてしまい、大きな不要トルクを生んで姿勢が崩れる。
+    ここでは「A0>0 のロータにできるだけ均等に」配分する（water-filling）。
+
     A0: (N,) where Fz = sum_i A0[i] * omega2[i]
     """
     A0 = np.asarray(A0, dtype=float).reshape(-1)
@@ -211,21 +216,42 @@ def _allocate_fz_greedy(
         return out
 
     hi = None if omega2_max is None else float(omega2_max)
-    # Prefer large A0 (more Fz per omega2)
-    order = list(np.argsort(-A0))
-    for i in order:
-        a = float(A0[i])
-        if a <= 1e-12:
-            continue
-        cap = float("inf") if hi is None else max(0.0, hi - out[i])
-        if cap <= 0.0:
-            continue
-        d = min(cap, rem / a)
-        if d <= 0.0:
-            continue
-        out[i] += d
-        rem -= a * d
-        if rem <= 1e-9:
+    active = A0 > 1e-12
+    if not bool(np.any(active)):
+        return out
+
+    # Allocate while respecting upper bounds (if any)
+    remaining = float(rem)
+    avail = active.copy()
+    eps = 1e-12
+    while remaining > 1e-9 and bool(np.any(avail)):
+        denom = float(np.sum(A0[avail]))
+        if denom <= 1e-12:
+            break
+        # Try to add the same omega2 increment to all available rotors.
+        d = remaining / denom
+        if hi is None:
+            out[avail] += d
+            remaining = 0.0
+            break
+
+        # If bounded, some rotors may hit hi. Saturate them and continue.
+        saturated_any = False
+        idxs = np.where(avail)[0]
+        for i in idxs:
+            cap = float(hi) - float(out[i])
+            if cap <= 0.0:
+                avail[i] = False
+                saturated_any = True
+                continue
+            if cap + eps < d:
+                out[i] += cap
+                remaining -= float(A0[i]) * cap
+                avail[i] = False
+                saturated_any = True
+        if not saturated_any:
+            out[avail] += d
+            remaining = 0.0
             break
     return out
 
@@ -272,7 +298,7 @@ def solve_mixer_with_fallback(
     else:
         omega2_max_eff = float(omega2_max)
 
-    omega2_base = _allocate_fz_greedy(A0=A0, Fz_target=float(u[0]), omega2_min=omega2_min, omega2_max=omega2_max_eff)
+    omega2_base = _allocate_fz_balanced(A0=A0, Fz_target=float(u[0]), omega2_min=omega2_min, omega2_max=omega2_max_eff)
 
     # 3) Constrained weighted solve (PX4-like desaturation)
     # Build wrench weights: strongly prioritize Fz; torque weights come from torque_weights.
