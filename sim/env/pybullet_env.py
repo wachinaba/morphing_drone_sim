@@ -63,8 +63,8 @@ class PyBulletEnv:
                     opts.append(f"--width={w}")
                 if h is not None and h > 0:
                     opts.append(f"--height={h}")
-            options = " ".join(opts) if opts else None
-            self._cid = self._p.connect(self._p.GUI, options=options)
+            options = " ".join(opts) if opts else ""
+            self._cid = self._p.connect(self._p.GUI) if options == "" else self._p.connect(self._p.GUI, options=str(options))
         elif (gui_width is not None or gui_height is not None):
             w = None if gui_width is None else int(gui_width)
             h = None if gui_height is None else int(gui_height)
@@ -73,8 +73,8 @@ class PyBulletEnv:
                 opts.append(f"--width={w}")
             if h is not None and h > 0:
                 opts.append(f"--height={h}")
-            options = " ".join(opts) if opts else None
-            self._cid = self._p.connect(self._p.GUI, options=options)
+            options = " ".join(opts) if opts else ""
+            self._cid = self._p.connect(self._p.GUI) if options == "" else self._p.connect(self._p.GUI, options=str(options))
         else:
             self._cid = self._p.connect(self._p.GUI if bool(gui) else self._p.DIRECT)
         if self._cid < 0:
@@ -436,6 +436,28 @@ class PyBulletEnv:
         for li in range(n):
             m += float(self._p.getDynamicsInfo(self.body_id, li)[0])
         return float(m)
+
+    def scale_total_mass(self, factor: float) -> None:
+        """
+        全リンクの質量と慣性を factor 倍する（base + 全ジョイント）。
+        factor > 0。質量分布の形は保つ（慣性も同じ係数でスケール）。
+        """
+        k = float(factor)
+        if k <= 0.0:
+            raise ValueError("scale_total_mass factor must be positive")
+        n = int(self._p.getNumJoints(self.body_id))
+        for link_index in [-1] + list(range(n)):
+            info = self._p.getDynamicsInfo(self.body_id, link_index)
+            mass = float(info[0])
+            inertia = list(info[2])  # local_inertia_diagonal (3,)
+            new_mass = mass * k
+            new_inertia = [inertia[i] * k for i in range(3)]
+            self._p.changeDynamics(
+                self.body_id,
+                link_index,
+                mass=new_mass,
+                localInertiaDiagonal=new_inertia,
+            )
 
     def apply_wrench_world(self, *, world_pos: np.ndarray, world_force: np.ndarray, world_torque: np.ndarray | None = None):
         """
