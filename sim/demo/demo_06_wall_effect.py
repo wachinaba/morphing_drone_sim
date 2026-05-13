@@ -1,4 +1,5 @@
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -133,6 +134,52 @@ def _yaw_from_vel_world_deg(vx: float, vy: float) -> float | None:
     return float(np.degrees(np.arctan2(float(vy), float(vx))))
 
 
+def _compute_wall_torque(st, args) -> tuple[int, float, float, np.ndarray]:
+    """
+    Compute wall_active, tau_wall_mag, d_wall, tau_wall_b from current state (for alignment with physics step).
+    Returns (wall_active, tau_wall_mag, d_wall, tau_wall_b).
+    """
+    from sim.control.attitude_pd import quat_xyzw_to_rotmat
+
+    if str(args.wall_orient) == "front":
+        d_signed = float(args.wall_x) - float(st.pos[0])
+        d_wall = float(d_signed)
+        wall_active = int(bool((float(st.pos[0]) >= float(args.wall_zone_x)) and (0.0 < d_signed < float(args.wall_range))))
+    else:
+        wall_x0_eff = float(args.wall_zone_x) if args.wall_x0 is None else float(args.wall_x0)
+        wall_x1_eff = wall_x0_eff + float(args.wall_len_x)
+        d_signed = float(st.pos[1]) - float(args.wall_y)
+        d_wall = float(abs(d_signed))
+        wall_active = int(bool((wall_x0_eff <= float(st.pos[0]) <= wall_x1_eff) and (float(abs(d_signed)) < float(args.wall_range))))
+    R_bw = quat_xyzw_to_rotmat(st.quat)
+    v_b = R_bw.T @ np.asarray(st.vel, dtype=float).reshape(3)
+    v_forward = max(0.0, float(v_b[0]))
+    wall_model = str(args.wall_model)
+    tau_wall_mag = 0.0
+    if wall_active and (wall_model != "off"):
+        if wall_model == "v2_over_d2":
+            denom = float(d_wall) * float(d_wall) + float(args.wall_d0) * float(args.wall_d0)
+            tau_wall_mag = float(args.wall_k) * float(v_forward) * float(v_forward) / max(1e-6, denom)
+        elif wall_model == "fixed_tau":
+            tau_wall_mag = float(args.wall_tau_fixed)
+        else:
+            tau_wall_mag = 0.0
+        tau_wall_mag = float(np.clip(tau_wall_mag, -abs(float(args.wall_tau_max)), +abs(float(args.wall_tau_max))))
+    tau_wall_b = np.zeros((3,), dtype=float)
+    sign_dir = 1.0
+    if str(args.wall_orient) == "side":
+        sign_dir = float(np.sign(d_signed))
+        if abs(sign_dir) < 1e-12:
+            sign_dir = 1.0
+    if str(args.wall_axis) == "roll":
+        tau_wall_b[0] = float(sign_dir) * tau_wall_mag
+    elif str(args.wall_axis) == "pitch":
+        tau_wall_b[1] = float(sign_dir) * tau_wall_mag
+    else:
+        tau_wall_b[2] = float(sign_dir) * tau_wall_mag
+    return wall_active, tau_wall_mag, d_wall, tau_wall_b
+
+
 def _has_contact(*, p, body_a: int, body_b: int | None = None, min_normal_force: float = 0.0) -> bool:
     """
     Return True if there is any contact point between body_a and (optionally) body_b
@@ -169,6 +216,23 @@ def _default_plot_path(*, args) -> Path:
         return p.with_name(p.stem + "_plots.png")
     ts = time.strftime("%Y%m%d_%H%M%S")
     return Path("out") / f"demo_06_wall_effect_plots_{ts}.png"
+
+
+def _default_energy_path(*, args) -> Path:
+    """
+    Pick a reasonable default output path for energy summary (JSON).
+    Priority:
+      1) --energy-out
+      2) --log-csv stem + "_energy.json"
+      3) out/demo_06_wall_effect_energy_<timestamp>.json
+    """
+    if getattr(args, "energy_out", None):
+        return Path(str(args.energy_out))
+    if getattr(args, "log_csv", None):
+        p = Path(str(args.log_csv))
+        return p.with_name(p.stem + "_energy.json")
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    return Path("out") / f"demo_06_wall_effect_energy_{ts}.json"
 
 
 def _save_timeseries_plots(
@@ -373,6 +437,12 @@ def main() -> int:
     ap.add_argument("--ang-damping", type=float, default=0.08)
 
     ap.add_argument("--urdf", type=str, default="assets/urdf/morphing_drone.urdf")
+    ap.add_argument(
+        "--mass-scale",
+        type=float,
+        default=1.0,
+        help="Scale total body mass (and inertia) by this factor. Default: 1.0. E.g. 1.25 => 1.8*1.25 kg.",
+    )
     ap.add_argument("--body-z", type=float, default=0.30)
     ap.add_argument("--z-des", type=float, default=None)
 
@@ -528,6 +598,24 @@ def main() -> int:
         help="Which body-axis torque to apply as wall-effect moment. Default: roll",
     )
     ap.add_argument("--wall-tau-max", type=float, default=0.2, help="Clamp |tau_wall| [N*m]. Default: 0.2")
+    ap.add_argument(
+        "--wall-ff",
+        action="store_true",
+        help="Feedforward disturbance rejection: add tau_ff = -tau_wall to attitude command so rotors produce the torque that cancels the wall-effect disturbance applied in physics. Default: off",
+    )
+
+    # Crash detection (ground/wall contact)
+    ap.add_argument(
+        "--crash-min-force",
+        type=float,
+        default=2.0,
+        help="Min contact normal force [N] to count as crash (ground or wall). Default: 2.0",
+    )
+    ap.add_argument(
+        "--no-crash-stop",
+        action="store_true",
+        help="Do not stop simulation on crash; only set crashed=True in output. Default: stop on crash.",
+    )
 
     ap.add_argument("--log-csv", type=str, default=None)
     ap.add_argument("--log-flush-every", type=int, default=10)
@@ -537,6 +625,23 @@ def main() -> int:
     ap.add_argument("--plot", action="store_true", help="Save time-series plots (PNG) after the run. Default: off")
     ap.add_argument("--plot-path", type=str, default=None, help="Output path for the PNG. Default: derived from --log-csv or out/...")
     ap.add_argument("--plot-dpi", type=int, default=160, help="PNG DPI. Default: 160")
+
+    # Energy evaluation (mechanical proxy)
+    ap.add_argument(
+        "--energy",
+        action="store_true",
+        help=(
+            "Compute energy-efficiency metrics using a mechanical power proxy from rotor drag torque "
+            "(P_mech = |CQ| * omega^3). Outputs a JSON summary and prints key metrics. Default: off"
+        ),
+    )
+    ap.add_argument(
+        "--energy-t0",
+        type=float,
+        default=0.0,
+        help="Start time [s] for energy/distance integration window (ignore initial transient/morph). Default: 0",
+    )
+    ap.add_argument("--energy-out", type=str, default=None, help="Output path for the energy summary JSON. Default: derived from --log-csv or out/...")
 
     # Camera (GUI)
     ap.add_argument("--cam-follow", action="store_true", help="In GUI, keep camera following the drone base.")
@@ -705,6 +810,9 @@ def main() -> int:
         plane_id = int(env.load_plane())
         env.load_body_urdf(str(args.urdf), base_pos=(0.0, 0.0, float(args.body_z)))
         env.configure_morphing_drone()
+        mass_scale = float(args.mass_scale)
+        if abs(mass_scale - 1.0) > 1e-9:
+            env.scale_total_mass(mass_scale)
         env.set_damping_all(linear=float(args.lin_damping), angular=float(args.ang_damping))
 
         # Video recording (MP4)
@@ -812,6 +920,16 @@ def main() -> int:
                 "omega2_act_1",
                 "omega2_act_2",
                 "omega2_act_3",
+                "phi_cmd_deg",
+                "psi_cmd_deg",
+                "theta_cmd_deg",
+                "power_mech_W_0",
+                "power_mech_W_1",
+                "power_mech_W_2",
+                "power_mech_W_3",
+                "power_mech_W_total",
+                "energy_mech_J_cum",
+                "dist_m_cum",
                 "d_wall",
                 "wall_model",
                 "wall_active",
@@ -844,6 +962,27 @@ def main() -> int:
         yaw_filt_deg = float(args.yaw_des)
         ixy_x = 0.0
         ixy_y = 0.0
+
+        # Crash detection (ground or wall contact above threshold)
+        crashed = False
+        crash_step: int | None = None
+        crash_t_s: float | None = None
+        crash_min_force = float(max(0.0, getattr(args, "crash_min_force", 2.0)))
+
+        # Energy/distance accumulators (control-rate samples; power is averaged over physics substeps)
+        energy_enabled = bool(args.energy)  # summary/JSON output
+        energy_track_enabled = bool(args.energy) or (csv_logger is not None)
+        energy_t0 = float(max(0.0, float(args.energy_t0)))
+        E_mech_J_cum = 0.0
+        E_mech_J_wall = 0.0
+        E_mech_J_nowall = 0.0
+        dist_m_cum = 0.0
+        dist_m_wall = 0.0
+        dist_m_nowall = 0.0
+        t_integ_s = 0.0
+        t_integ_wall_s = 0.0
+        t_integ_nowall_s = 0.0
+        st_prev = st0
 
         if bool(args.gui):
             print("[info] GUI mode: running in real-time-ish (sleep)")
@@ -1129,7 +1268,7 @@ def main() -> int:
             R_des = rotation_from_z_and_yaw(z_world=z_dir_des, yaw_deg=yaw_cmd_deg)
 
             # Control outputs
-            tau_b = attitude_pd_torque_body(R_bw=R_bw, ang_vel_world=st.ang_vel, R_des_bw=R_des, gains=g_att)
+            tau_b = np.asarray(attitude_pd_torque_body(R_bw=R_bw, ang_vel_world=st.ang_vel, R_des_bw=R_des, gains=g_att), dtype=float).reshape(3)
             Fz_cmd = altitude_pd_Fz_world(
                 z_world=float(st.pos[2]),
                 vz_world=float(st.vel[2]),
@@ -1141,6 +1280,18 @@ def main() -> int:
                 Fz_max=None,
             )
 
+            # Wall effect torque: computed at control rate for FF/mix; re-computed per physics substep for application (see substep loop).
+            # This avoids timing lag: when substeps>1 the drone moves within a control step; applying wall torque from current state
+            # keeps disturbance aligned with "actually in zone" instead of "was in zone at step start".
+            wall_active, tau_wall_mag, d_wall, tau_wall_b = _compute_wall_torque(st, args)
+
+            # Feedforward (disturbance rejection): known disturbance d = tau_wall_b (applied as external wrench in physics).
+            # FF adds the control torque needed to cancel it: tau_ff = -d, so tau_cmd = tau_pd + tau_ff.
+            # Rotors then produce tau_cmd; body receives tau_cmd + d = tau_pd (proper control, not "inject then cancel").
+            if getattr(args, "wall_ff", False):
+                tau_ff_b = -tau_wall_b
+                tau_b = tau_b + tau_ff_b
+
             # Build allocation matrix in WORLD frame
             r_body, n_body = env.rotor_geometry_body()
             r_world = (R_bw @ r_body.T).T
@@ -1150,7 +1301,7 @@ def main() -> int:
             A = build_allocation_matrix(r_body=r_world, n_body=n_world_for_fz, C_T=float(args.CT), C_Q=float(args.CQ), spin_dir=spin_dir)
 
             # Target wrench: [Fz_world, tau_world]
-            tau_w = R_bw @ np.asarray(tau_b, dtype=float).reshape(3)
+            tau_w = R_bw @ tau_b
             u = np.array([float(Fz_cmd), float(tau_w[0]), float(tau_w[1]), float(tau_w[2])], dtype=float)
 
             mix = solve_mixer_with_fallback(
@@ -1163,50 +1314,6 @@ def main() -> int:
                 fallback_ridge=float(args.fallback_ridge),
                 fallback_auto_omega2_factor=float(args.fallback_auto_omega2_factor),
             )
-
-            # Wall effect torque (computed at control rate, applied at physics substeps)
-            # Distance-to-wall and activation
-            if str(args.wall_orient) == "front":
-                d_signed = float(args.wall_x) - float(st.pos[0])  # + if wall is ahead
-                d_wall = float(d_signed)
-                wall_active = int(bool((float(st.pos[0]) >= float(args.wall_zone_x)) and (0.0 < d_signed < float(args.wall_range))))
-            else:
-                wall_x0_eff = float(args.wall_zone_x) if args.wall_x0 is None else float(args.wall_x0)
-                wall_x1_eff = wall_x0_eff + float(args.wall_len_x)
-                # Signed lateral distance: + if drone is above wall_y, - if below.
-                d_signed = float(st.pos[1]) - float(args.wall_y)
-                d_wall = float(abs(d_signed))
-                wall_active = int(bool((wall_x0_eff <= float(st.pos[0]) <= wall_x1_eff) and (float(abs(d_signed)) < float(args.wall_range))))
-            v_b = R_bw.T @ np.asarray(st.vel, dtype=float).reshape(3)
-            v_forward = max(0.0, float(v_b[0]))
-
-            wall_model = str(args.wall_model)
-            tau_wall_mag = 0.0
-            if wall_active and (wall_model != "off"):
-                if wall_model == "v2_over_d2":
-                    denom = float(d_wall) * float(d_wall) + float(args.wall_d0) * float(args.wall_d0)
-                    tau_wall_mag = float(args.wall_k) * float(v_forward) * float(v_forward) / max(1e-6, denom)
-                elif wall_model == "fixed_tau":
-                    tau_wall_mag = float(args.wall_tau_fixed)
-                else:
-                    # argparse choices should prevent this, but keep safe fallback
-                    tau_wall_mag = 0.0
-                tau_wall_mag = float(np.clip(tau_wall_mag, -abs(float(args.wall_tau_max)), +abs(float(args.wall_tau_max))))
-            tau_wall_b = np.zeros((3,), dtype=float)
-            # Restore sign for side wall: direction depends on which side the wall is on.
-            # Convention: d_signed = y - y_wall. For default wall_y=+1 and y≈0 => d_signed<0, torque becomes negative.
-            # (This matches the user's requested sign flip.)
-            sign_dir = 1.0
-            if str(args.wall_orient) == "side":
-                sign_dir = float(np.sign(d_signed))
-                if abs(sign_dir) < 1e-12:
-                    sign_dir = 1.0
-            if str(args.wall_axis) == "roll":
-                tau_wall_b[0] = float(sign_dir) * tau_wall_mag
-            elif str(args.wall_axis) == "pitch":
-                tau_wall_b[1] = float(sign_dir) * tau_wall_mag
-            else:
-                tau_wall_b[2] = float(sign_dir) * tau_wall_mag
 
             omega2_act = np.asarray(mix.omega2_cmd, dtype=float).reshape(4)
 
@@ -1230,7 +1337,15 @@ def main() -> int:
                 psi_cmd = float(psi_cmd) + float(args.psi_amp) * float(np.sin(2.0 * np.pi * float(args.psi_freq) * float(t)))
                 theta_cmd = float(theta_cmd) + float(args.theta_amp) * float(np.sin(2.0 * np.pi * float(args.theta_freq) * float(t)))
 
-            for _ in range(int(substeps)):
+            # Integrate mechanical energy proxy over physics substeps.
+            # P_mech per rotor is computed from rotor drag torque proxy: P = |CQ| * omega^3, where omega = sqrt(omega2).
+            dt_ctrl_eff = float(substeps) * float(dt_phys)
+            E_step_rotor_J = np.zeros((4,), dtype=float)
+            for j_sub in range(int(substeps)):
+                # Use current state for wall torque application so disturbance aligns with actual position (avoids 1-step lag when substeps>1).
+                st_sub = env.get_state() if j_sub > 0 else st
+                wall_active_sub, tau_wall_mag_sub, _, tau_wall_b_sub = _compute_wall_torque(st_sub, args)
+
                 env.set_morph_angles(phi_deg=phi_cmd, psi_deg=psi_cmd, theta_deg=theta_cmd, symmetry=str(args.morph_symmetry))
                 omega2_act = motor.step(mix.omega2_cmd, dt_phys)
                 for i in range(4):
@@ -1238,9 +1353,15 @@ def main() -> int:
                     tau_react = float(spin_dir[i]) * float(args.CQ) * float(omega2_act[i])
                     env.apply_rotor_thrust_link_frame(rotor_idx=i, thrust=thrust, reaction_torque=tau_react)
 
-                if wall_active and float(abs(tau_wall_mag)) > 0.0:
-                    R_bw_now = quat_xyzw_to_rotmat(env.get_state().quat)
-                    tau_wall_w = R_bw_now @ tau_wall_b
+                omega2_act_clip = np.maximum(0.0, np.asarray(omega2_act, dtype=float).reshape(4))
+                omega = np.sqrt(omega2_act_clip)
+                P_mech_rotor_W = abs(float(args.CQ)) * omega2_act_clip * omega
+                E_step_rotor_J += P_mech_rotor_W * float(dt_phys)
+
+                # Disturbance (plant input): apply wall-effect torque from *current* state so timing matches "in zone".
+                if wall_active_sub and float(abs(tau_wall_mag_sub)) > 0.0:
+                    R_bw_now = quat_xyzw_to_rotmat(st_sub.quat)
+                    tau_wall_w = R_bw_now @ tau_wall_b_sub
                     env.apply_body_wrench_world(torque_world=(float(tau_wall_w[0]), float(tau_wall_w[1]), float(tau_wall_w[2])))
 
                 if args.record_mp4 is not None:
@@ -1260,13 +1381,45 @@ def main() -> int:
             R_bw = quat_xyzw_to_rotmat(st.quat)
             yaw_deg = float(np.degrees(np.arctan2(float(R_bw[1, 0]), float(R_bw[0, 0]))))
 
+            P_mech_rotor_W = (E_step_rotor_J / max(1e-12, float(dt_ctrl_eff))).reshape(4)
+            P_mech_total_W = float(np.sum(P_mech_rotor_W))
+
+            # Integrate metrics (control-rate distance; energy integrated via substeps) in the window [energy_t0, end).
+            if energy_track_enabled and (float(t) >= float(energy_t0)):
+                dpos = np.asarray(st.pos, dtype=float).reshape(3) - np.asarray(st_prev.pos, dtype=float).reshape(3)
+                ds = float(np.linalg.norm(dpos))
+                dist_m_cum += ds
+                t_integ_s += float(dt_ctrl_eff)
+                E_step_J = float(np.sum(E_step_rotor_J))
+                E_mech_J_cum += E_step_J
+                if int(wall_active) == 1:
+                    E_mech_J_wall += E_step_J
+                    dist_m_wall += ds
+                    t_integ_wall_s += float(dt_ctrl_eff)
+                else:
+                    E_mech_J_nowall += E_step_J
+                    dist_m_nowall += ds
+                    t_integ_nowall_s += float(dt_ctrl_eff)
+
+            st_prev = st
+
+            # Crash detection: contact with ground or wall above threshold
+            if not crashed and crash_min_force > 0.0:
+                if _has_contact(p=p, body_a=env.body_id, body_b=plane_id, min_normal_force=crash_min_force) or _has_contact(
+                    p=p, body_a=env.body_id, body_b=wall_id, min_normal_force=crash_min_force
+                ):
+                    crashed = True
+                    crash_step = int(k)
+                    crash_t_s = float(t)
+                    if not getattr(args, "no_crash_stop", False):
+                        print(f"[crash] detected at step={k} t={t:.3f}s (contact force >= {crash_min_force} N)")
+                        break
+
             if plot_enabled:
                 # Rotor thrust and (proxy) power from omega2_act.
                 omega2_act_clip = np.maximum(0.0, np.asarray(omega2_act, dtype=float).reshape(4))
                 thrust_N = float(args.CT) * omega2_act_clip
-                omega = np.sqrt(omega2_act_clip)
-                # Proxy mechanical power due to drag torque: P = |CQ| * omega^3 (W)
-                power_W = abs(float(args.CQ)) * omega2_act_clip * omega
+                power_W = np.asarray(P_mech_rotor_W, dtype=float).reshape(4)
                 ang_w = np.asarray(st.ang_vel, dtype=float).reshape(3)
                 ang_b = (R_bw.T @ ang_w.reshape(3)).reshape(3)
                 # Euler angles (ZYX yaw-pitch-roll) from R_bw (body->world)
@@ -1325,8 +1478,18 @@ def main() -> int:
                     "omega2_act_1": float(omega2_act[1]),
                     "omega2_act_2": float(omega2_act[2]),
                     "omega2_act_3": float(omega2_act[3]),
+                    "phi_cmd_deg": float(phi_cmd),
+                    "psi_cmd_deg": float(psi_cmd),
+                    "theta_cmd_deg": float(theta_cmd),
+                    "power_mech_W_0": float(P_mech_rotor_W[0]),
+                    "power_mech_W_1": float(P_mech_rotor_W[1]),
+                    "power_mech_W_2": float(P_mech_rotor_W[2]),
+                    "power_mech_W_3": float(P_mech_rotor_W[3]),
+                    "power_mech_W_total": float(P_mech_total_W),
+                    "energy_mech_J_cum": float(E_mech_J_cum),
+                    "dist_m_cum": float(dist_m_cum),
                     "d_wall": float(d_wall),
-                    "wall_model": str(wall_model),
+                    "wall_model": str(args.wall_model),
                     "wall_active": int(wall_active),
                     "tau_wall_x_b": float(tau_wall_b[0]),
                     "tau_wall_y_b": float(tau_wall_b[1]),
@@ -1359,6 +1522,97 @@ def main() -> int:
                 tau_wall_b=np.stack(tau_wall_b_log, axis=0) if tau_wall_b_log else np.zeros((0, 3), dtype=float),
                 dpi=int(args.plot_dpi),
             )
+
+        if energy_enabled:
+            g = float(args.gravity)
+            m = float(mass)
+
+            def _safe_div(a: float, b: float) -> float | None:
+                b = float(b)
+                if abs(b) <= 1e-12:
+                    return None
+                return float(a) / b
+
+            E_Wh = float(E_mech_J_cum) / 3600.0
+            P_avg_W = _safe_div(float(E_mech_J_cum), float(t_integ_s))
+            Wh_per_m = _safe_div(float(E_Wh), float(dist_m_cum))
+            COT = _safe_div(float(E_mech_J_cum), float(m) * float(g) * float(dist_m_cum))
+
+            E_wall_Wh = float(E_mech_J_wall) / 3600.0
+            P_wall_avg_W = _safe_div(float(E_mech_J_wall), float(t_integ_wall_s))
+            Wh_per_m_wall = _safe_div(float(E_wall_Wh), float(dist_m_wall))
+            COT_wall = _safe_div(float(E_mech_J_wall), float(m) * float(g) * float(dist_m_wall))
+
+            E_nowall_Wh = float(E_mech_J_nowall) / 3600.0
+            P_nowall_avg_W = _safe_div(float(E_mech_J_nowall), float(t_integ_nowall_s))
+            Wh_per_m_nowall = _safe_div(float(E_nowall_Wh), float(dist_m_nowall))
+            COT_nowall = _safe_div(float(E_mech_J_nowall), float(m) * float(g) * float(dist_m_nowall))
+
+            summary = {
+                "crash": {
+                    "crashed": bool(crashed),
+                    "crash_step": crash_step,
+                    "crash_t_s": crash_t_s,
+                },
+                "meta": {
+                    "script": "sim.demo.demo_06_wall_effect",
+                    "seconds": float(args.seconds),
+                    "hz": float(args.hz),
+                    "physics_hz": float(args.physics_hz),
+                    "substeps": int(substeps),
+                    "dt_phys": float(dt_phys),
+                    "dt_ctrl_eff": float(substeps) * float(dt_phys),
+                    "energy_t0": float(energy_t0),
+                    "mass_kg": float(m),
+                    "gravity": float(g),
+                    "CT": float(args.CT),
+                    "CQ": float(args.CQ),
+                    "note": "Energy uses mechanical proxy from rotor drag torque: P_mech = |CQ| * omega^3.",
+                },
+                "total": {
+                    "E_mech_J": float(E_mech_J_cum),
+                    "E_mech_Wh": float(E_Wh),
+                    "P_avg_W": P_avg_W,
+                    "time_s": float(t_integ_s),
+                    "distance_m": float(dist_m_cum),
+                    "Wh_per_m": Wh_per_m,
+                    "COT": COT,
+                },
+                "wall_active": {
+                    "E_mech_J": float(E_mech_J_wall),
+                    "E_mech_Wh": float(E_wall_Wh),
+                    "P_avg_W": P_wall_avg_W,
+                    "time_s": float(t_integ_wall_s),
+                    "distance_m": float(dist_m_wall),
+                    "Wh_per_m": Wh_per_m_wall,
+                    "COT": COT_wall,
+                },
+                "wall_inactive": {
+                    "E_mech_J": float(E_mech_J_nowall),
+                    "E_mech_Wh": float(E_nowall_Wh),
+                    "P_avg_W": P_nowall_avg_W,
+                    "time_s": float(t_integ_nowall_s),
+                    "distance_m": float(dist_m_nowall),
+                    "Wh_per_m": Wh_per_m_nowall,
+                    "COT": COT_nowall,
+                },
+            }
+
+            out_path = _default_energy_path(args=args)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            print(f"[energy] wrote: {str(out_path)}")
+            crash_suffix = " [CRASHED]" if crashed else ""
+            print(
+                "[energy] total: "
+                f"E={float(E_mech_J_cum):.2f} J ({float(E_Wh):.6f} Wh), "
+                f"Pavg={(P_avg_W if P_avg_W is not None else float('nan')):.2f} W, "
+                f"dist={float(dist_m_cum):.3f} m, "
+                f"Wh/m={(Wh_per_m if Wh_per_m is not None else float('nan')):.6e}, "
+                f"COT={(COT if COT is not None else float('nan')):.6f}{crash_suffix}"
+            )
+            if crashed and crash_t_s is not None:
+                print(f"[energy] crash at t={crash_t_s:.3f}s step={crash_step}")
 
         return 0
     finally:
